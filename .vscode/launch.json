@@ -1,0 +1,26 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Run Extension (ワークスペースファイルで開く)",
+			"type": "extensionHost",
+			"request": "launch",
+			"runtimeExecutable": "${execPath}",
+			"args": [
+				"${workspaceFolder}/pachinkas.code-workspace",
+				"--extensionDevelopmentPath=${workspaceFolder}"
+			],
+			"preLaunchTask": "npm: compile (no sound)"
+		},
+		{
+			"name": "Run Extension (拡張のみ・フォルダは手動)",
+			"type": "extensionHost",
+			"request": "launch",
+			"runtimeExecutable": "${execPath}",
+			"args": [
+				"--extensionDevelopmentPath=${workspaceFolder}"
+			],
+			"preLaunchTask": "npm: compile (no sound)"
+		}
+	]
+}

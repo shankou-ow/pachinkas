@@ -1,0 +1,106 @@
+{
+  "name": "pachinkas",
+  "displayName": "パチンカス",
+  "description": "パチンカスのための拡張機能",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yuu/pachinkas.git"
+  },
+  "version": "0.0.1",
+  "license": "MIT",
+  "publisher": "yuu",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:pachinkas.demo",
+    "onCommand:pachinkas.playPachinkoSounds",
+    "onCommand:pachinkas.openExtensionSettings",
+    "onCommand:pachinkas.toggleRandomTypingSound"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pachinkas.demo",
+        "title": "デモ: 動作確認メッセージ",
+        "category": "パチンカス"
+      },
+      {
+        "command": "pachinkas.playPachinkoSounds",
+        "title": "SE を再生",
+        "category": "パチンカス"
+      },
+      {
+        "command": "pachinkas.openExtensionSettings",
+        "title": "拡張機能の設定を開く",
+        "category": "パチンカス"
+      },
+      {
+        "command": "pachinkas.toggleRandomTypingSound",
+        "title": "タイピング時ランダム SE を切り替え",
+        "category": "パチンカス"
+      }
+    ],
+    "configuration": {
+      "title": "パチンカス",
+      "properties": {
+        "pachinkas.randomTypingSoundEnabled": {
+          "type": "boolean",
+          "default": true,
+          "title": "タイピング時ランダム SE",
+          "markdownDescription": "オンにしたときだけ、タイピング変更を監視してランダムで SE が鳴ります。オフのときは監視リスナーを登録しないため、負荷を抑えられます。手動の「SE を再生」コマンドは常に使えます。"
+        },
+        "pachinkas.showRandomTypingInStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "title": "ステータスバーにランダム切替を表示",
+          "markdownDescription": "オフにすると、タイピング時ランダム SE のオン／オフ用ステータスバー項目を非表示にします。切り替えはコマンド「タイピング時ランダム SE を切り替え」や設定から行えます。"
+        },
+        "pachinkas.randomTypingDenominator": {
+          "type": "integer",
+          "default": 16384,
+          "minimum": 0,
+          "maximum": 100000,
+          "title": "タイピング時ランダム発動の分母",
+          "markdownDescription": "「タイピング時ランダム SE」がオンのときだけ有効です。ランダムで SE を鳴らす確率の分母です。`0` で抽選のみ無効、`1` で該当する変更のたびに発動、既定は `16384`（約 1/16384）です。下の欄に数値を直接入力できます。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "compile:no-sound": "npm run check-types && npm run lint && CI=1 node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/play-sound": "^1.1.2",
+    "@types/vscode": "^1.105.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.27.3",
+    "eslint": "^9.39.3",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1"
+  },
+  "dependencies": {
+    "play-sound": "^1.1.6"
+  }
+}
