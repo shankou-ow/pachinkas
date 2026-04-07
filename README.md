@@ -15,7 +15,7 @@
 
 音声再生は OS のプレーヤー（例: macOS の `afplay`）に依存します。
 
-**Cursor** では、Webview の DOM 準備ができてから**タブを前面化**し、拡張側が `postMessage` の配信完了を待ってから**ホスト音声**を開始します（映像の開始シグナルは Webview 内で同期的に処理します）。拡張 API では**キー入力をグローバルにロック**することはできません。
+**音声**は拡張ホスト（`play-sound` 等）で再生し、Webview は映像のみです。**VS Code**では Webview から `pachikasPaintReady` を受け取るか、`reveal` 後に始まるタイムアウトまで待ってから、さらに `HOST_AUDIO_LAG_AFTER_PAINT_MS` 経過後に再生を開始します。**Cursor**では Webview→拡張の通知が届かないことがあるため、`reveal` 後の固定遅延（`CURSOR_REVEAL_TO_AUDIO_BASE_DELAY_MS`）と上記ラグでタイミングを合わせます。各値は `src/extension.ts` の定数を参照してください。拡張 API では**キー入力をグローバルにロック**することはできません。
 
 ## インストール（開発者向け）
 
