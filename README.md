@@ -29,6 +29,12 @@ npx @vscode/vsce package
 
 生成された `.vsix` を **拡張機能 → メニュー → VSIX からのインストール** で入れてください。
 
+**Cursor**では、リポジトリ直下に `pachinkas-0.0.2.vsix` がある状態で、ターミナルから次でもインストールできます（`code` は VS Code 互換の CLI で、Cursor にも同梱されることが多いです）。
+
+```bash
+code --install-extension ./pachinkas-0.0.2.vsix
+```
+
 ## ライセンス
 
 MIT License。全文はリポジトリ直下の [`LICENSE`](LICENSE) を参照してください。
