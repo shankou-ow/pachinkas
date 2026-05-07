@@ -6,7 +6,7 @@
     "type": "git",
     "url": "https://github.com/yuu/pachinkas.git"
   },
-  "version": "0.0.2",
+  "version": "0.0.8",
   "license": "MIT",
   "publisher": "yuu",
   "engines": {
@@ -49,6 +49,21 @@
     "configuration": {
       "title": "パチンカス",
       "properties": {
+        "pachinkas.performancePattern": {
+          "type": "string",
+          "enum": [
+            "classic",
+            "godVideo"
+          ],
+          "enumDescriptions": [
+            "暗転ビジュアルとホスト側 SE のみ（従来）",
+            "暗転のあと映像は Webview・音声はホストで GOD.mp4（自動）"
+          ],
+          "default": "classic",
+          "title": "演出パターン",
+          "description": "SE 再生時の映像演出。godVideo は Webview で映像のみ自動再生し、音声はホストで GOD.mp4 を再生します。",
+          "markdownDescription": "`classic`: 従来どおり、暗転用のビジュアルとホスト側の SE（ブラックアウト → セブンフラッシュ）のみ。`godVideo`: 暗転のあと **ブラックアウト.mp3** のあと、**映像だけ**を Webview でミュート自動再生し、**音声は拡張ホスト**（`play-sound` / macOS なら `afplay` 等）で同じ `assets/GOD.mp4` を再生します（Webview の自動再生制限を避けるため）。OS のプレーヤーが MP4 の音を再生できない場合はエラーになります。"
+        },
         "pachinkas.randomTypingSoundEnabled": {
           "type": "boolean",
           "default": true,
@@ -80,6 +95,7 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "vsix": "vsce package",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
@@ -94,6 +110,7 @@
     "@types/vscode": "^1.105.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.27.3",
     "eslint": "^9.39.3",
     "npm-run-all": "^4.1.5",

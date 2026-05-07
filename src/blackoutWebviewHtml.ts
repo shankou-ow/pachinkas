@@ -2,32 +2,33 @@
  * エディタ暗転 Webview の HTML。音声は拡張ホスト（`play-sound`）で再生し、ここは映像のみ。
  */
 
-export function buildBlackoutPanelCsp(_cspSource: string): string {
-	return [
+export type BlackoutPerformancePattern = 'classic' | 'godVideo';
+
+export function buildBlackoutPanelCsp(
+	cspSource: string,
+	pattern: BlackoutPerformancePattern,
+): string {
+	const parts = [
 		"default-src 'none'",
 		"style-src 'unsafe-inline'",
 		"script-src 'unsafe-inline'",
-	].join('; ');
+	];
+	if (pattern === 'godVideo') {
+		parts.push(`media-src ${cspSource} blob:`);
+	}
+	return parts.join('; ');
 }
 
 export type BlackoutPanelHtmlParams = {
 	csp: string;
 	/** 映像の `--pach-audio-lead`。ホスト音声開始との粗い合わせ（ms） */
 	syncAnimDelayMs: number;
+	pattern: BlackoutPerformancePattern;
 };
 
-export function getBlackoutPanelHtml(params: BlackoutPanelHtmlParams): string {
-	const { csp, syncAnimDelayMs } = params;
-	return `<!DOCTYPE html>
-<html lang="ja">
-<head>
-	<meta charset="UTF-8" />
-	<meta http-equiv="Content-Security-Policy" content="${csp}" />
-	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-	<title></title>
-	<style>
+const BLACKOUT_VISUAL_CSS = `
 		html {
-			--pach-audio-lead: ${syncAnimDelayMs}ms;
+			--pach-audio-lead: SYNC_ANIM_DELAY_PLACEHOLDERms;
 		}
 		html, body {
 			margin: 0;
@@ -177,16 +178,28 @@ export function getBlackoutPanelHtml(params: BlackoutPanelHtmlParams): string {
 			0% { opacity: 0; }
 			100% { opacity: 1; }
 		}
-	</style>
-</head>
-<body>
-	<div id="iris" aria-hidden="true"></div>
-	<div id="vignetteDark" aria-hidden="true"></div>
-	<div id="vignette" aria-hidden="true"></div>
-	<div id="tvline" aria-hidden="true"></div>
-	<div id="scan" aria-hidden="true"></div>
-	<script>
-		(function () {
+`;
+
+const GOD_VIDEO_CSS = `
+		#godVideo {
+			position: fixed;
+			inset: 0;
+			width: 100%;
+			height: 100%;
+			object-fit: contain;
+			background: #000;
+			opacity: 0;
+			transition: opacity 0.38s ease;
+			z-index: 999999;
+			pointer-events: none;
+		}
+		#godVideo.pach-god-visible {
+			opacity: 1;
+		}
+`;
+
+function buildInlineScriptClassic(): string {
+	return `(function () {
 			var api;
 			try {
 				api = acquireVsCodeApi();
@@ -210,7 +223,6 @@ export function getBlackoutPanelHtml(params: BlackoutPanelHtmlParams): string {
 					});
 				});
 			}
-			// 拡張からの pachikasArm（複数回）で起動。reveal 直後は未ロードのことがあるため。
 			window.addEventListener('message', function (event) {
 				var d = event.data;
 				if (d && d.type === 'pachikasArm') {
@@ -230,7 +242,174 @@ export function getBlackoutPanelHtml(params: BlackoutPanelHtmlParams): string {
 				}
 				trySend();
 			}, 80);
-		})();
+		})();`;
+}
+
+/**
+ * 動画 URI は拡張からの `postMessage({ type: 'pachikasRevealGod', src })` で渡す（Webview 内 setTimeout より確実）。
+ */
+function buildInlineScriptGodVideo(): string {
+	return `(function () {
+			var api;
+			try {
+				api = acquireVsCodeApi();
+			} catch (e) {
+				api = null;
+			}
+			var sent = false;
+			function trySend() {
+				if (sent || !api) {
+					return;
+				}
+				try {
+					api.postMessage({ type: 'pachikasPaintReady' });
+					sent = true;
+				} catch (e) {}
+			}
+			function afterFrames() {
+				requestAnimationFrame(function () {
+					requestAnimationFrame(function () {
+						requestAnimationFrame(trySend);
+					});
+				});
+			}
+			var godNotified = false;
+			var lastGodPhase = 'unset';
+			var lastGodDetail = '';
+			function godDiag(phase, detail) {
+				lastGodPhase = String(phase || '');
+				lastGodDetail = String(detail == null ? '' : detail).slice(0, 800);
+			}
+			function notifyGodDone() {
+				if (godNotified) {
+					return;
+				}
+				godNotified = true;
+				if (!api) {
+					return;
+				}
+				try {
+					api.postMessage({
+						type: 'pachikasGodVideoEnded',
+						phase: lastGodPhase,
+						detail: lastGodDetail,
+					});
+				} catch (e) {}
+			}
+			function pachHideBlackoutLayers() {
+				['iris', 'vignetteDark', 'vignette', 'tvline', 'scan'].forEach(function (id) {
+					var el = document.getElementById(id);
+					if (el) {
+						el.style.setProperty('display', 'none', 'important');
+					}
+				});
+			}
+			var godStarted = false;
+			function startGodFromExtension(src, audioViaHost) {
+				if (godStarted) {
+					return;
+				}
+				if (!src || typeof src !== 'string') {
+					godDiag('no-src', '');
+					notifyGodDone();
+					return;
+				}
+				godStarted = true;
+				var v = document.getElementById('godVideo');
+				if (!v) {
+					godDiag('no-video-element', '');
+					notifyGodDone();
+					return;
+				}
+				pachHideBlackoutLayers();
+				godDiag('muted-autoplay', 'audioViaHost=' + !!audioViaHost + ' ' + src.slice(0, 120));
+				function onGodError() {
+					var err = v.error;
+					var bits = err
+						? 'code=' + err.code + ' message=' + (err.message || '')
+						: 'no MediaError';
+					godDiag('video-error', bits);
+					notifyGodDone();
+				}
+				function onGodEnded() {
+					godDiag('ended', 'duration=' + (v.duration || 0));
+					notifyGodDone();
+				}
+				v.addEventListener('error', onGodError, { once: true });
+				v.addEventListener('ended', onGodEnded, { once: true });
+				v.src = src;
+				v.classList.add('pach-god-visible');
+				v.defaultMuted = true;
+				v.muted = true;
+				v.volume = 1;
+				var p = v.play();
+				if (p && typeof p.then === 'function') {
+					p.catch(function (e) {
+						godDiag('play-muted-failed', String((e && e.message) || e));
+						notifyGodDone();
+					});
+				}
+			}
+			window.addEventListener('message', function (event) {
+				var d = event.data;
+				if (d && d.type === 'pachikasArm') {
+					afterFrames();
+				}
+				if (d && d.type === 'pachikasRevealGod') {
+					startGodFromExtension(d.src, d.audioViaHost === true);
+				}
+			});
+			if (document.readyState === 'complete') {
+				afterFrames();
+			} else {
+				window.addEventListener('load', afterFrames);
+			}
+			var n = 0;
+			var tick = setInterval(function () {
+				if (sent || n++ >= 24) {
+					clearInterval(tick);
+					return;
+				}
+				trySend();
+			}, 80);
+			setTimeout(function () {
+				if (!godStarted) {
+					godDiag('fallback-5s', 'pachikasRevealGod が届かないか未処理');
+					notifyGodDone();
+				}
+			}, 5000);
+		})();`;
+}
+
+export function getBlackoutPanelHtml(params: BlackoutPanelHtmlParams): string {
+	const { csp, syncAnimDelayMs, pattern } = params;
+	const styleBlock =
+		BLACKOUT_VISUAL_CSS.replace('SYNC_ANIM_DELAY_PLACEHOLDER', String(syncAnimDelayMs)) +
+		(pattern === 'godVideo' ? GOD_VIDEO_CSS : '');
+	const godVideoTag =
+		pattern === 'godVideo' ? '<video id="godVideo" playsinline preload="metadata"></video>' : '';
+	const script = pattern === 'godVideo' ? buildInlineScriptGodVideo() : buildInlineScriptClassic();
+
+	return `<!DOCTYPE html>
+<html lang="ja">
+<head>
+	<meta charset="UTF-8" />
+	<meta http-equiv="Content-Security-Policy" content="${csp}" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title></title>
+	<style>
+${styleBlock}
+	</style>
+</head>
+<body>
+	<div id="iris" aria-hidden="true"></div>
+	<div id="vignetteDark" aria-hidden="true"></div>
+	<div id="vignette" aria-hidden="true"></div>
+	<div id="tvline" aria-hidden="true"></div>
+	<div id="scan" aria-hidden="true"></div>
+	${godVideoTag}
+	<script>
+		${script}
 	</script>
 </body>
 </html>`;

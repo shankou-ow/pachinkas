@@ -1,7 +1,12 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import playSound = require('play-sound');
-import { buildBlackoutPanelCsp, getBlackoutPanelHtml } from './blackoutWebviewHtml';
+import {
+	type BlackoutPerformancePattern,
+	buildBlackoutPanelCsp,
+	getBlackoutPanelHtml,
+} from './blackoutWebviewHtml';
 import {
 	isCursorLikeAppName,
 	resolveAssetEntryName,
@@ -77,6 +82,19 @@ const CURSOR_REVEAL_TO_AUDIO_BASE_DELAY_MS = 420;
 
 /** ホスト再生が異常に長引いたときの安全タイムアウト（ms）。異常時のみ。 */
 const BLACKOUT_SEQUENCE_MAX_MS = 180_000;
+
+/** `pachikasGodVideoEnded` が届かないときの上限（ms）。長尺動画向けにホストより長く取る。 */
+const GOD_VIDEO_WAIT_MAX_MS = 600_000;
+
+/**
+ * 演出パターン。VS Code がマージした実効値は `getConfiguration(section)` の `.get()` だけが正しい。
+ * `inspect()` を手で合成すると実効値とずれることがある。
+ */
+function getPerformancePattern(): BlackoutPerformancePattern {
+	const raw = vscode.workspace.getConfiguration('pachinkas').get<string>('performancePattern');
+	const n = (raw ?? '').trim().toLowerCase();
+	return n === 'godvideo' ? 'godVideo' : 'classic';
+}
 
 function getRandomTypingDenominator(): number {
 	const raw = vscode.workspace
@@ -187,12 +205,18 @@ function playAsync(filePath: string): Promise<void> {
 	});
 }
 
+/** godVideo: 1曲目のあと Webview にミュート映像を出し、続けてホストで GOD.mp4 の音声を鳴らす */
+type GodHostBridge = {
+	revealMutedWebview: () => void;
+};
+
 async function playHostAssetSequence(
 	context: vscode.ExtensionContext,
-	timing?: PlaybackTiming,
+	timing: PlaybackTiming | undefined,
+	pattern: BlackoutPerformancePattern,
+	godBridge: GodHostBridge | undefined,
 ): Promise<void> {
 	const p1 = resolveAssetFsPath(context.extensionPath, 'ブラックアウト.mp3');
-	const p2 = resolveAssetFsPath(context.extensionPath, 'セブンフラッシュ.mp3');
 	timing?.mark('ホスト: 1曲目 play() 直前');
 	pachinkasLog(`ホスト再生: ${p1}`);
 	await playAsync(p1);
@@ -200,6 +224,20 @@ async function playHostAssetSequence(
 	if (BLACKOUT_HOLD_MS > 0) {
 		await sleep(BLACKOUT_HOLD_MS);
 	}
+	if (pattern === 'godVideo') {
+		timing?.mark('ホスト: godVideo（セブンの代わりに GOD 音声＋Webview 映像）');
+		pachinkasLog('godVideo: Webview はミュート自動再生、音声はホストで GOD.mp4');
+		if (godBridge !== undefined) {
+			godBridge.revealMutedWebview();
+		}
+		const godPath = resolveAssetFsPath(context.extensionPath, 'GOD.mp4');
+		timing?.mark('ホスト: GOD 音声 play() 直前');
+		pachinkasLog(`ホスト再生（GOD 音声）: ${godPath}`);
+		await playAsync(godPath);
+		timing?.mark('ホスト: GOD 音声 終了（プロセス close）');
+		return;
+	}
+	const p2 = resolveAssetFsPath(context.extensionPath, 'セブンフラッシュ.mp3');
 	timing?.mark('ホスト: 2曲目 play() 直前');
 	pachinkasLog(`ホスト再生: ${p2}`);
 	await playAsync(p2);
@@ -221,6 +259,24 @@ function isPaintReadyMessage(msg: unknown): boolean {
 	}
 	if (typeof msg === 'object' && msg !== null && 'type' in msg) {
 		return (msg as { type: string }).type === 'pachikasPaintReady';
+	}
+	return false;
+}
+
+function isGodVideoEndedMessage(msg: unknown): boolean {
+	if (msg === null || msg === undefined) {
+		return false;
+	}
+	if (typeof msg === 'string') {
+		try {
+			const o = JSON.parse(msg) as { type?: string };
+			return o.type === 'pachikasGodVideoEnded';
+		} catch {
+			return false;
+		}
+	}
+	if (typeof msg === 'object' && msg !== null && 'type' in msg) {
+		return (msg as { type: string }).type === 'pachikasGodVideoEnded';
 	}
 	return false;
 }
@@ -280,6 +336,8 @@ function runHostBlackoutSequence(
 	context: vscode.ExtensionContext,
 	timing: PlaybackTiming | undefined,
 	paintReadyPromise: Promise<void>,
+	pattern: BlackoutPerformancePattern,
+	godBridge: GodHostBridge | undefined,
 ): Promise<void> {
 	return new Promise<void>((resolve) => {
 		let finished = false;
@@ -315,7 +373,7 @@ function runHostBlackoutSequence(
 					await sleep(HOST_AUDIO_LAG_AFTER_PAINT_MS);
 					timing?.mark('ホスト: 映像に合わせて音声遅延 sleep 完了');
 				}
-				await playHostAssetSequence(context, timing);
+				await playHostAssetSequence(context, timing, pattern, godBridge);
 				pachinkasLog('ホスト再生完了');
 			} catch (e) {
 				pachinkasLog(`ホスト再生エラー: ${String(e)}`);
@@ -330,17 +388,59 @@ function runHostBlackoutSequence(
 }
 
 /**
+ * God 動画終了（またはエラー・タイムアウト）まで待つ。Cursor 等で postMessage が届かない場合もタイムアウトで解放する。
+ */
+function createGodVideoEndedPromise(
+	panel: vscode.WebviewPanel,
+	timing?: PlaybackTiming,
+): Promise<void> {
+	const maxWait = isCursorLikeAppName(vscode.env.appName ?? '')
+		? 180_000
+		: GOD_VIDEO_WAIT_MAX_MS;
+	return new Promise<void>((resolve) => {
+		let finished = false;
+		const finish = (reason: string): void => {
+			if (finished) {
+				return;
+			}
+			finished = true;
+			sub.dispose();
+			if (timeoutId !== undefined) {
+				clearTimeout(timeoutId);
+				timeoutId = undefined;
+			}
+			timing?.mark(`God動画: 待機終了 (${reason})`);
+			resolve();
+		};
+		const sub = panel.webview.onDidReceiveMessage((msg: unknown) => {
+			if (isGodVideoEndedMessage(msg)) {
+				const m = msg as { phase?: string; detail?: string };
+				pachinkasLog(
+					`God動画 Webview→拡張 終了: phase=${m.phase ?? '(なし)'} detail=${m.detail ?? '(なし)'}`,
+				);
+				finish('Webview メッセージ');
+			}
+		});
+		let timeoutId: ReturnType<typeof setTimeout> | undefined = setTimeout(
+			() => finish('タイムアウト'),
+			maxWait,
+		);
+	});
+}
+
+/**
  * エディタ領域を黒く覆う Webview を開く。
  * VS Code API ではウィンドウ全体（アクティビティバー等）の暗転はできない。
  */
 function createEditorBlackoutPanel(
 	context: vscode.ExtensionContext,
-	options?: { timing?: PlaybackTiming },
+	options?: { timing?: PlaybackTiming; pattern: BlackoutPerformancePattern },
 ): {
 	panel: vscode.WebviewPanel;
 	whenSequenceDone: Promise<void>;
 } {
 	const timing = options?.timing;
+	const pattern = options?.pattern ?? 'classic';
 
 	timing?.mark('createWebviewPanel 直前');
 	const panel = vscode.window.createWebviewPanel(
@@ -368,10 +468,27 @@ function createEditorBlackoutPanel(
 		startPaintWaitTimeout = pr.startPaintWaitTimeout;
 	}
 
+	let godVideoWebviewUri: string | undefined;
+	if (pattern === 'godVideo') {
+		const assetsDirFs = path.join(context.extensionPath, 'assets');
+		const godEntry = resolveAssetEntryName(assetsDirFs, 'GOD.mp4');
+		const godFs = path.join(assetsDirFs, godEntry);
+		try {
+			const st = fs.statSync(godFs);
+			pachinkasLog(`God動画ファイル: ${godFs} size=${st.size} bytes`);
+		} catch (e) {
+			pachinkasLogError('God動画の stat に失敗', e);
+		}
+		const godUri = vscode.Uri.joinPath(context.extensionUri, 'assets', godEntry);
+		godVideoWebviewUri = panel.webview.asWebviewUri(godUri).toString();
+		pachinkasLog(`God Webview URI 先頭: ${godVideoWebviewUri.slice(0, 96)}`);
+	}
+
 	timing?.mark('getBlackoutPanelHtml 代入直前');
 	panel.webview.html = getBlackoutPanelHtml({
-		csp: buildBlackoutPanelCsp(panel.webview.cspSource),
+		csp: buildBlackoutPanelCsp(panel.webview.cspSource, pattern),
 		syncAnimDelayMs: BLACKOUT_VISUAL_LEAD_MS,
+		pattern,
 	});
 	timing?.mark('getBlackoutPanelHtml 代入直後（Webview 読み込みは非同期）');
 	timing?.mark('即時 reveal 直前');
@@ -399,7 +516,30 @@ function createEditorBlackoutPanel(
 		startPaintWaitTimeout!();
 	}
 
-	const whenSequenceDone = runHostBlackoutSequence(context, timing, paintReadyPromise!);
+	const godBridge: GodHostBridge | undefined =
+		pattern === 'godVideo' && godVideoWebviewUri !== undefined
+			? {
+					revealMutedWebview: (): void => {
+						timing?.mark('God: Webview にミュート映像 Reveal（ホスト音声と同期）');
+						void panel.webview.postMessage({
+							type: 'pachikasRevealGod',
+							src: godVideoWebviewUri,
+							audioViaHost: true,
+						});
+					},
+				}
+			: undefined;
+
+	const whenHostDone = runHostBlackoutSequence(
+		context,
+		timing,
+		paintReadyPromise!,
+		pattern,
+		godBridge,
+	);
+	const whenGodDone =
+		pattern === 'godVideo' ? createGodVideoEndedPromise(panel, timing) : Promise.resolve();
+	const whenSequenceDone = Promise.all([whenHostDone, whenGodDone]).then(() => {});
 
 	return { panel, whenSequenceDone };
 }
@@ -409,12 +549,31 @@ async function playPachinkoSounds(context: vscode.ExtensionContext): Promise<voi
 	if (pachinkaPlaybackBusy) {
 		return;
 	}
+	const cfg = vscode.workspace.getConfiguration('pachinkas');
+	const pattern = getPerformancePattern();
+	const ins = cfg.inspect('performancePattern');
+	pachinkasLog(
+		`演出パターン get()=${JSON.stringify(cfg.get<string>('performancePattern'))} => ${pattern}（inspect: folder=${JSON.stringify(ins?.workspaceFolderValue)} ws=${JSON.stringify(ins?.workspaceValue)} user=${JSON.stringify(ins?.globalValue)}）`,
+	);
+	if (pattern === 'godVideo') {
+		try {
+			const assetsDirFs = path.join(context.extensionPath, 'assets');
+			resolveAssetEntryName(assetsDirFs, 'GOD.mp4');
+		} catch (e) {
+			pachinkasLogError('GOD.mp4 が見つかりません', e);
+			void vscode.window.showErrorMessage(
+				'パチンカス: 演出「godVideo」用の assets/GOD.mp4 が見つかりません。設定を classic に戻すか、ファイルを配置してください。',
+			);
+			return;
+		}
+	}
 	pachinkaPlaybackBusy = true;
 	const timing = createPlaybackTiming();
-	timing.mark('SE再生開始（playPachinkoSounds）');
+	timing.mark(`SE再生開始（playPachinkoSounds） pattern=${pattern}`);
 	try {
 		const { panel: blackout, whenSequenceDone } = createEditorBlackoutPanel(context, {
 			timing,
+			pattern,
 		});
 		timing.mark('createEditorBlackoutPanel 復帰（await whenSequenceDone 直前）');
 		try {
@@ -432,7 +591,10 @@ async function playPachinkoSounds(context: vscode.ExtensionContext): Promise<voi
 export function activate(context: vscode.ExtensionContext) {
 	pachinkasOutput = vscode.window.createOutputChannel('パチンカス');
 	context.subscriptions.push(pachinkasOutput);
-	pachinkasLog('拡張機能を有効化しました（出力は「表示」→「出力」→「パチンカス」）');
+	const extVer = context.extension.packageJSON?.version ?? '?';
+	pachinkasLog(
+		`拡張機能を有効化しました（v${extVer}）。出力は「表示」→「出力」→「パチンカス」。godVideo は映像のみ Webview・音声はホストで GOD.mp4 を再生します。`,
+	);
 
 	const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
 	statusBar.command = 'pachinkas.toggleRandomTypingSound';
